@@ -1,0 +1,121 @@
+// This Pine Script code is subject to the terms of the Mozilla Public License 2.0
+//@version=5
+strategy("EMA Trend + MACD Momentum (ATR Risk) — Crypto", shorttitle="EMA-MACD-ATR",
+     overlay=true, initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=10,
+     commission_type=strategy.commission.percent, commission_value=0.1,
+     slippage=2, pyramiding=0, calc_on_every_tick=false,
+     process_orders_on_close=true)
+
+// =========================================================================
+// EMA Trend + MACD Momentum, ATR-based risk management.
+// Designed to be timeframe-agnostic (ATR-normalized stops/targets), so it
+// works on both 15m and 4h crypto charts without re-tuning the risk model.
+//
+// Logic:
+//   - Trend filter : fast EMA vs slow EMA (default 50/200) sets bias
+//   - Trigger      : MACD line crossing its signal line, in trend direction
+//   - Risk         : stop = ATR * multiplier, target = stop distance * R:R
+//   - Optional ATR-based trailing stop once in a position
+//
+// This is a starting point for validation/backtesting, not a finished
+// production system. Past performance in a backtest does not guarantee
+// future results — walk-forward test and paper-trade before risking
+// real capital, and be mindful of exchange fees/slippage assumptions
+// baked into the commission/slippage inputs below.
+// =========================================================================
+
+// === Trend Filter ===
+emaFastLen = input.int(50, "Fast EMA (trend)", minval=1, group="Trend Filter")
+emaSlowLen = input.int(200, "Slow EMA (trend)", minval=1, group="Trend Filter")
+
+// === MACD Trigger ===
+macdFastLen   = input.int(12, "MACD Fast Length", group="MACD")
+macdSlowLen   = input.int(26, "MACD Slow Length", group="MACD")
+macdSignalLen = input.int(9, "MACD Signal Length", group="MACD")
+
+// === Risk Management ===
+atrLen        = input.int(14, "ATR Length", group="Risk Management")
+atrMultSL     = input.float(1.5, "ATR Multiplier — Stop Loss", minval=0.1, step=0.1, group="Risk Management")
+rrRatio       = input.float(2.0, "Reward:Risk Ratio (Take Profit)", minval=0.1, step=0.1, group="Risk Management")
+useTrailStop  = input.bool(true, "Use ATR Trailing Stop", group="Risk Management")
+atrMultTrail  = input.float(2.0, "ATR Multiplier — Trailing Stop", minval=0.1, step=0.1, group="Risk Management")
+
+// === Trade Direction ===
+allowLongs  = input.bool(true, "Allow Long Trades", group="Trade Direction")
+allowShorts = input.bool(true, "Allow Short Trades", group="Trade Direction")
+
+// === Backtest Window ===
+startDate = input.time(timestamp("2023-01-01T00:00:00"), "Backtest Start", group="Backtest Window")
+endDate   = input.time(timestamp("2069-01-01T00:00:00"), "Backtest End", group="Backtest Window")
+inWindow  = time >= startDate and time <= endDate
+
+// === Indicators ===
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+[macdLine, signalLine, histLine] = ta.macd(close, macdFastLen, macdSlowLen, macdSignalLen)
+atrVal = ta.atr(atrLen)
+
+trendUp   = emaFast > emaSlow
+trendDown = emaFast < emaSlow
+
+macdCrossUp   = ta.crossover(macdLine, signalLine)
+macdCrossDown = ta.crossunder(macdLine, signalLine)
+
+longCondition  = allowLongs  and trendUp   and macdCrossUp   and inWindow
+shortCondition = allowShorts and trendDown and macdCrossDown and inWindow
+
+// === Plots ===
+plot(emaFast, "Fast EMA", color=color.new(color.teal, 0))
+plot(emaSlow, "Slow EMA", color=color.new(color.orange, 0))
+
+plotshape(longCondition, title="Long Signal", location=location.belowbar,
+     style=shape.triangleup, color=color.new(color.green, 0), size=size.small)
+plotshape(shortCondition, title="Short Signal", location=location.abovebar,
+     style=shape.triangledown, color=color.new(color.red, 0), size=size.small)
+
+// === Strategy Execution ===
+var float longStop    = na
+var float longTarget  = na
+var float shortStop   = na
+var float shortTarget = na
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+    longStop   := close - atrVal * atrMultSL
+    longTarget := close + atrVal * atrMultSL * rrRatio
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+    shortStop   := close + atrVal * atrMultSL
+    shortTarget := close - atrVal * atrMultSL * rrRatio
+
+if strategy.position_size > 0
+    if useTrailStop
+        trailOffsetTicks = (atrVal * atrMultTrail) / syminfo.mintick
+        strategy.exit("Long Exit", from_entry="Long", stop=longStop, limit=longTarget,
+             trail_points=trailOffsetTicks, trail_offset=trailOffsetTicks)
+    else
+        strategy.exit("Long Exit", from_entry="Long", stop=longStop, limit=longTarget)
+
+if strategy.position_size < 0
+    if useTrailStop
+        trailOffsetTicks = (atrVal * atrMultTrail) / syminfo.mintick
+        strategy.exit("Short Exit", from_entry="Short", stop=shortStop, limit=shortTarget,
+             trail_points=trailOffsetTicks, trail_offset=trailOffsetTicks)
+    else
+        strategy.exit("Short Exit", from_entry="Short", stop=shortStop, limit=shortTarget)
+
+if strategy.position_size == 0
+    longStop    := na
+    longTarget  := na
+    shortStop   := na
+    shortTarget := na
+
+// Force-flatten outside the configured backtest window
+if not inWindow and strategy.position_size != 0
+    strategy.close_all("Out of window")
+
+// === Alerts (for future automation, e.g. webhook to a trading bot) ===
+alertcondition(longCondition, title="Long Entry", message="EMA-MACD-ATR: LONG signal on {{ticker}} at {{close}}")
+alertcondition(shortCondition, title="Short Entry", message="EMA-MACD-ATR: SHORT signal on {{ticker}} at {{close}}")
