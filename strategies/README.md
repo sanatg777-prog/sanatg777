@@ -30,6 +30,35 @@ all adjustable in the script inputs.
 4. Adjust inputs (EMA lengths, ATR multipliers, R:R, date window) and
    re-run to compare.
 
+## v2 — fixing the -10% v1 result on BTCUSDT 4h
+
+First backtest (v1: plain EMA trend + MACD cross) returned -10%, with a
+**high trade count and mostly small losses** — the signature of trading
+chop rather than trend. The 50/200 EMA filter changes direction rarely, so
+once it tilts one way it can stay "up" through long sideways stretches,
+during which MACD keeps false-crossing on minor pullbacks. Each one gets
+stopped out small, and they add up.
+
+v2 changes to address this:
+- **ADX filter** — only trade when ADX (default threshold 20) confirms an
+  actual trend, not just EMA order.
+- **Minimum EMA separation** (normalized by ATR) — skip trades when the
+  EMAs are basically flat/overlapping.
+- **Wider stop** (1.5×ATR → 2.0×ATR) and **R:R** (2.0 → 2.5) so normal 4h
+  noise doesn't clip entries immediately.
+- **Cooldown** (min bars between entries) to cut down rapid re-entries in
+  choppy stretches.
+- Gray background shading on the chart marks bars where the chop filter is
+  blocking entries, so you can see what's being filtered.
+
+Re-run the Strategy Tester with v2 and compare trade count / win rate /
+max drawdown against the v1 numbers. If it's still net negative, the next
+things worth checking, in order: (1) does BTCUSDT 4h actually trend enough
+in your test window for this style of system, or was it a mostly-ranging
+period; (2) try a longer backtest window to see if it's a curve-fit result
+on a short one; (3) consider dropping short trades if crypto's long-term
+drift makes shorts a structural headwind in your sample.
+
 ## Backtesting via the `trader-dev` MCP server (blocked)
 
 The `trader-dev` MCP server added to this session (`https://mcp.trader.dev/sse`)

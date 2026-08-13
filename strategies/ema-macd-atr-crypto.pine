@@ -8,21 +8,28 @@ strategy("EMA Trend + MACD Momentum (ATR Risk) — Crypto", shorttitle="EMA-MACD
      process_orders_on_close=true)
 
 // =========================================================================
-// EMA Trend + MACD Momentum, ATR-based risk management.
-// Designed to be timeframe-agnostic (ATR-normalized stops/targets), so it
-// works on both 15m and 4h crypto charts without re-tuning the risk model.
+// EMA Trend + MACD Momentum, ATR-based risk management, ADX chop filter.
+// Timeframe-agnostic (ATR-normalized stops/targets): 15m and 4h crypto.
 //
-// Logic:
-//   - Trend filter : fast EMA vs slow EMA (default 50/200) sets bias
-//   - Trigger      : MACD line crossing its signal line, in trend direction
-//   - Risk         : stop = ATR * multiplier, target = stop distance * R:R
-//   - Optional ATR-based trailing stop once in a position
+// v2 changes (after v1 backtested -10% on BTCUSDT 4h: high trade count,
+// mostly small losses — the classic signature of trading chop, not trend):
+//   - Added ADX trend-strength filter: skip entries when ADX is below
+//     threshold, i.e. EMAs are tilted but the market isn't actually
+//     trending (common when a slow 50/200 filter stays "up" through a
+//     long sideways consolidation and MACD keeps false-crossing inside it).
+//   - Added a minimum EMA separation (normalized by ATR) so trades aren't
+//     taken when the fast/slow EMAs are basically on top of each other.
+//   - Widened default ATR stop multiplier (1.5 -> 2.0) so normal 4h noise
+//     doesn't clip entries immediately, and bumped default R:R to 2.5.
+//   - Added a cooldown (minimum bars between entries) to cut down on
+//     rapid-fire re-entries during choppy stretches.
+//   - Background shading marks bars where the chop filter is blocking
+//     entries, so you can see on the chart what's being filtered out.
 //
 // This is a starting point for validation/backtesting, not a finished
-// production system. Past performance in a backtest does not guarantee
-// future results — walk-forward test and paper-trade before risking
-// real capital, and be mindful of exchange fees/slippage assumptions
-// baked into the commission/slippage inputs below.
+// production system. A profitable backtest does not guarantee future
+// results — walk-forward test across multiple regimes and paper-trade
+// before risking real capital.
 // =========================================================================
 
 // === Trend Filter ===
@@ -34,12 +41,19 @@ macdFastLen   = input.int(12, "MACD Fast Length", group="MACD")
 macdSlowLen   = input.int(26, "MACD Slow Length", group="MACD")
 macdSignalLen = input.int(9, "MACD Signal Length", group="MACD")
 
+// === Trend Strength / Chop Filter ===
+adxLen          = input.int(14, "ADX/DMI Length", group="Chop Filter")
+adxSmooth       = input.int(14, "ADX Smoothing", group="Chop Filter")
+adxThreshold    = input.float(20.0, "Minimum ADX (trend strength)", minval=0, step=1, group="Chop Filter")
+minEmaSepATR    = input.float(0.5, "Minimum EMA Separation (x ATR)", minval=0, step=0.1, group="Chop Filter")
+minBarsBetween  = input.int(5, "Cooldown — Min Bars Between Entries", minval=0, group="Chop Filter")
+
 // === Risk Management ===
 atrLen        = input.int(14, "ATR Length", group="Risk Management")
-atrMultSL     = input.float(1.5, "ATR Multiplier — Stop Loss", minval=0.1, step=0.1, group="Risk Management")
-rrRatio       = input.float(2.0, "Reward:Risk Ratio (Take Profit)", minval=0.1, step=0.1, group="Risk Management")
+atrMultSL     = input.float(2.0, "ATR Multiplier — Stop Loss", minval=0.1, step=0.1, group="Risk Management")
+rrRatio       = input.float(2.5, "Reward:Risk Ratio (Take Profit)", minval=0.1, step=0.1, group="Risk Management")
 useTrailStop  = input.bool(true, "Use ATR Trailing Stop", group="Risk Management")
-atrMultTrail  = input.float(2.0, "ATR Multiplier — Trailing Stop", minval=0.1, step=0.1, group="Risk Management")
+atrMultTrail  = input.float(2.5, "ATR Multiplier — Trailing Stop", minval=0.1, step=0.1, group="Risk Management")
 
 // === Trade Direction ===
 allowLongs  = input.bool(true, "Allow Long Trades", group="Trade Direction")
@@ -55,6 +69,7 @@ emaFast = ta.ema(close, emaFastLen)
 emaSlow = ta.ema(close, emaSlowLen)
 [macdLine, signalLine, histLine] = ta.macd(close, macdFastLen, macdSlowLen, macdSignalLen)
 atrVal = ta.atr(atrLen)
+[diPlus, diMinus, adxValue] = ta.dmi(adxLen, adxSmooth)
 
 trendUp   = emaFast > emaSlow
 trendDown = emaFast < emaSlow
@@ -62,12 +77,20 @@ trendDown = emaFast < emaSlow
 macdCrossUp   = ta.crossover(macdLine, signalLine)
 macdCrossDown = ta.crossunder(macdLine, signalLine)
 
-longCondition  = allowLongs  and trendUp   and macdCrossUp   and inWindow
-shortCondition = allowShorts and trendDown and macdCrossDown and inWindow
+trendStrong    = adxValue > adxThreshold
+emaSeparated   = math.abs(emaFast - emaSlow) > atrVal * minEmaSepATR
+chopFilterPass = trendStrong and emaSeparated
+
+var int lastEntryBar = na
+cooldownOK = na(lastEntryBar) or (bar_index - lastEntryBar) >= minBarsBetween
+
+longCondition  = allowLongs  and trendUp   and macdCrossUp   and chopFilterPass and cooldownOK and inWindow
+shortCondition = allowShorts and trendDown and macdCrossDown and chopFilterPass and cooldownOK and inWindow
 
 // === Plots ===
 plot(emaFast, "Fast EMA", color=color.new(color.teal, 0))
 plot(emaSlow, "Slow EMA", color=color.new(color.orange, 0))
+bgcolor(chopFilterPass ? na : color.new(color.gray, 90), title="Chop filter blocking entries")
 
 plotshape(longCondition, title="Long Signal", location=location.belowbar,
      style=shape.triangleup, color=color.new(color.green, 0), size=size.small)
@@ -82,13 +105,15 @@ var float shortTarget = na
 
 if longCondition
     strategy.entry("Long", strategy.long)
-    longStop   := close - atrVal * atrMultSL
-    longTarget := close + atrVal * atrMultSL * rrRatio
+    longStop     := close - atrVal * atrMultSL
+    longTarget   := close + atrVal * atrMultSL * rrRatio
+    lastEntryBar := bar_index
 
 if shortCondition
     strategy.entry("Short", strategy.short)
-    shortStop   := close + atrVal * atrMultSL
-    shortTarget := close - atrVal * atrMultSL * rrRatio
+    shortStop    := close + atrVal * atrMultSL
+    shortTarget  := close - atrVal * atrMultSL * rrRatio
+    lastEntryBar := bar_index
 
 if strategy.position_size > 0
     if useTrailStop
