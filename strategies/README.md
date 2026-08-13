@@ -1,82 +1,115 @@
-# EMA Trend + MACD Momentum (ATR Risk) — Crypto Strategy
+# Crypto Strategy Research — BTC/ETH
 
-`ema-macd-atr-crypto.pine` is a TradingView Pine Script v5 **strategy** (not
-just a display indicator) for crypto on 15m or 4h charts. It's built with
-`strategy()` so TradingView's built-in Strategy Tester produces equity
-curve, win rate, profit factor, drawdown, etc. directly — no external
-backtester required to get first results.
+## Current recommended strategy: `supertrend-overlay-btc-eth.pine`
 
-## Logic
+Long-only trend overlay: fully invested while a Supertrend (ATR band,
+length 21, multiplier 4.0) is bullish, flat in cash (never short) while
+it's bearish. No fixed stop-loss or take-profit — the goal is to capture
+buy-and-hold-like upside during real uptrends while sidestepping major
+drawdowns, rather than trying to out-trade the market with tight stops
+that cap winners (which is what every earlier version of this research
+did, and which consistently lost to simple buy-and-hold — see history
+below).
 
-1. **Trend filter** — 50 EMA vs 200 EMA (configurable) sets long/short bias.
-2. **Trigger** — MACD line crossing its signal line, only taken in the
-   direction of the trend filter.
-3. **Risk management** — stop-loss and take-profit are sized off ATR
-   (Average True Range), so the same settings scale sensibly across both
-   15m and 4h without re-tuning. Default: 1.5×ATR stop, 2:1 reward:risk
-   target, optional ATR-based trailing stop once in profit.
-4. **Backtest window** inputs let you constrain the test period, and the
-   strategy auto-flattens positions outside that window.
+**Out-of-sample results** (train/test split, held-out test period, vs raw
+buy-and-hold on the same period):
 
-Defaults assume $10,000 initial capital, 10% of equity per trade, 0.1%
-commission (typical crypto exchange taker fee) and 2 ticks of slippage —
-all adjustable in the script inputs.
+| | Overlay Return | Overlay Max DD | Buy-Hold Return | Buy-Hold Max DD |
+|---|---|---|---|---|
+| BTC 1D | +48.8% | 41.5% | +48.0% | 53.0% |
+| ETH 1D | +8.3% | 47.0% | -23.7% | 67.5% |
+| BTC 4h | +7.4% | 28.1% | -23.3% | 53.4% |
+| ETH 4h | +52.8% | 46.6% | +4.2% | 68.0% |
 
-## How to backtest in TradingView (available today)
+On BTC it matches buy-and-hold's return with meaningfully less drawdown;
+on ETH (both timeframes) and BTC-4h it turns a buy-and-hold *loss* into a
+real gain, because those windows included stretches where staying out
+during a downtrend mattered.
 
-1. Open TradingView → Pine Editor → paste in `ema-macd-atr-crypto.pine`.
-2. Add to chart on your crypto symbol (e.g. BTCUSDT) at 15m or 4h.
+**Honest caveats:**
+- Drawdowns are still large in *absolute* terms (28-47%), because this is
+  full (or `Position Size %`) exposure while in a position, not a small
+  tactical bet like the earlier low-frequency systems below. It beats
+  buy-and-hold's risk/return on the same asset, but it is not a
+  "low-drawdown" system in isolation.
+- **Only validated on BTC and ETH.** Tested and *underperformed*
+  buy-and-hold on XRP and BNB in the same period — do not assume this
+  generalizes to other assets without the same train/test validation.
+- Past out-of-sample performance is not a guarantee of future results —
+  re-validate periodically as new data comes in, and paper-trade before
+  risking real capital.
+
+### How to backtest in TradingView
+
+1. Open TradingView → Pine Editor → paste in `supertrend-overlay-btc-eth.pine`.
+2. Add to chart on BTCUSDT or ETHUSDT, 1D or 4h.
 3. Open the **Strategy Tester** tab for equity curve / trade list / stats.
-4. Adjust inputs (EMA lengths, ATR multipliers, R:R, date window) and
-   re-run to compare.
+4. Compare against a simple buy-and-hold baseline over the same window to
+   make sure the overlay is actually adding value, not just riding the
+   asset's own drift.
 
-## v2 — fixing the -10% v1 result on BTCUSDT 4h
+---
 
-First backtest (v1: plain EMA trend + MACD cross) returned -10%, with a
-**high trade count and mostly small losses** — the signature of trading
-chop rather than trend. The 50/200 EMA filter changes direction rarely, so
-once it tilts one way it can stay "up" through long sideways stretches,
-during which MACD keeps false-crossing on minor pullbacks. Each one gets
-stopped out small, and they add up.
+## Research history (superseded, kept for context)
 
-v2 changes to address this:
-- **ADX filter** — only trade when ADX (default threshold 20) confirms an
-  actual trend, not just EMA order.
-- **Minimum EMA separation** (normalized by ATR) — skip trades when the
-  EMAs are basically flat/overlapping.
-- **Wider stop** (1.5×ATR → 2.0×ATR) and **R:R** (2.0 → 2.5) so normal 4h
-  noise doesn't clip entries immediately.
-- **Cooldown** (min bars between entries) to cut down rapid re-entries in
-  choppy stretches.
-- Gray background shading on the chart marks bars where the chop filter is
-  blocking entries, so you can see what's being filtered.
+This strategy is the result of an extended iteration process — kept here
+so the reasoning behind it (and what *didn't* work) isn't lost.
 
-Re-run the Strategy Tester with v2 and compare trade count / win rate /
-max drawdown against the v1 numbers. If it's still net negative, the next
-things worth checking, in order: (1) does BTCUSDT 4h actually trend enough
-in your test window for this style of system, or was it a mostly-ranging
-period; (2) try a longer backtest window to see if it's a curve-fit result
-on a short one; (3) consider dropping short trades if crypto's long-term
-drift makes shorts a structural headwind in your sample.
+**v1 — EMA trend + MACD cross** (`ema-macd-atr-crypto.pine`): first
+attempt, both-direction trading with tight ATR stops/targets. Backtested
+-10% on BTCUSDT 4h with high trade count and mostly small losses — the
+signature of trading chop, not trend.
 
-## Backtesting via the `trader-dev` MCP server (blocked)
+**v2** — added an ADX trend-strength filter, minimum EMA separation, wider
+stops, and a cooldown between entries. Reduced losses but was still net
+negative on a proper multi-year, multi-symbol, train/test-validated
+backtest (BTC/ETH/XRP/BNB/SOL, 2017-2026): every top in-sample candidate
+flipped negative out-of-sample.
 
-The `trader-dev` MCP server added to this session (`https://mcp.trader.dev/sse`)
-currently reports **"Needs authentication"** and exposes no tools — there's
-nothing to call yet, so it can't be used to run this backtest
-programmatically. Once it's authenticated (credentials/API key/OAuth,
-whichever it expects), the plan would be:
+**v3 — chandelier exit redesign**: replaced the fixed take-profit with an
+ATR trailing stop to stop capping winners early. Same result: still
+failed out-of-sample with the same entry logic, which pointed the
+problem at the *entry signal* (EMA/MACD timing), not the exits.
 
-- Confirm it's genuinely a paper/sandbox environment before anything trades.
-- Translate the entry/exit logic above into whatever format the server's
-  backtest tool expects (likely OHLCV history + the same EMA/MACD/ATR rules).
-- Run the backtest with explicit capital and risk limits, not an open-ended
-  "maximize profit" objective — same guardrails discussed earlier apply.
+**Genuinely different entry signals tested one at a time**, each with
+proper train/test splits:
+- **Donchian channel breakout** — worked well on BTC/ETH/XRP (this was the
+  first signal to show real, consistent out-of-sample edge).
+- **Trend-filtered support-bounce (mean reversion)** — buying a confirmed
+  N-day-low rejection candle, but *only* when price is still above
+  EMA200. Without that trend filter it was a net loser (classic
+  falling-knife risk); with it, modest but real positive edge on
+  BTC/ETH/BNB.
+- **Volatility squeeze breakout** (Bollinger Bands inside Keltner
+  Channels, trade the release) — built and tested, not carried forward.
+- **Trendline break** (pivot-based diagonal support/resistance) — also
+  showed real out-of-sample edge on BTC/ETH.
+- **RSI mean-reversion** — tested alone on 4h, did not show a real edge
+  (negative even in-sample).
+- **Supertrend, both-direction (stop-and-reverse)** — the strongest
+  single-indicator result on 4h data of anything tested, but still capped
+  winners by shorting into what were often just pullbacks within larger
+  uptrends.
+
+A combined 3-signal portfolio (breakout + reversion + trendline break,
+BTC/ETH only, capital split across sleeves) validated out-of-sample at
++4.98% net / 1.30% max drawdown over ~32 months on 1D data — a real,
+low-drawdown, low-frequency result, but modest in absolute return
+(~1.9% annualized) — well below buy-and-hold BTC in the same window
+(+48.6%).
+
+**The actual unlock**: every prior version traded *both* directions with
+tight stops/targets, which structurally caps gains during a real trend —
+useful for smoothing an equity curve, bad for capturing the large moves
+that dominate crypto's actual returns. Switching Supertrend to a
+**long-only, in-or-out overlay** (ride the trend fully invested, step
+aside to cash — never short) captured most of buy-and-hold's upside while
+avoiding its worst drawdowns, which is what finally beat the buy-and-hold
+benchmark instead of just losing less badly than it.
 
 ## Disclaimer
 
-This is a starting point for research and validation, not a finished
-production trading system. A profitable backtest does not guarantee future
-performance — check for overfitting, walk-forward test across multiple
-regimes, and paper-trade before any real capital is involved. Not
-financial advice.
+This is a research artifact, not a finished production trading system. A
+profitable backtest does not guarantee future performance — check for
+overfitting, walk-forward test across multiple regimes, and paper-trade
+before any real capital is involved. Not financial advice.
